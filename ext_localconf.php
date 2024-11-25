@@ -16,6 +16,13 @@
         'FILE:EXT:fal_s3/Configuration/FlexForm/AmazonS3DriverFlexForm.xml'
     );
 
+    $driverRegistry->registerDriverClass(
+        \MaxServ\FalS3\Driver\HetznerS3Driver::class,
+        MaxServ\FalS3\Driver\HetznerS3Driver::DRIVER_KEY,
+        'S3 Hetzner driver for FAL',
+        'FILE:EXT:fal_s3/Configuration/FlexForm/HetznerS3DriverFlexForm.xml'
+    );
+
     $GLOBALS['TYPO3_CONF_VARS']['EXTCONF']['fal_s3']['storageConfigurations']['offlineStorage'] = [
         'bucket' => '',
         'region' => '',
