@@ -24,6 +24,7 @@ use Psr\Http\Message\ResponseInterface;
 use TYPO3\CMS\Core\Cache\Exception\NoSuchCacheException;
 use TYPO3\CMS\Core\Http\Response;
 use TYPO3\CMS\Core\Http\Stream;
+use TYPO3\CMS\Core\Resource\Capabilities;
 use TYPO3\CMS\Core\Resource\Driver\AbstractHierarchicalFilesystemDriver;
 use TYPO3\CMS\Core\Resource\Driver\StreamableDriverInterface;
 use TYPO3\CMS\Core\Resource\Exception\ExistingTargetFileNameException;
@@ -90,9 +91,12 @@ class AmazonS3Driver extends AbstractHierarchicalFilesystemDriver implements Str
     {
         parent::__construct($configuration);
 
-        $this->capabilities = ResourceStorageInterface::CAPABILITY_BROWSABLE |
-            ResourceStorageInterface::CAPABILITY_PUBLIC |
-            ResourceStorageInterface::CAPABILITY_WRITABLE;
+        $capabilityBits = 0;
+        $capabilityBits += Capabilities::CAPABILITY_BROWSABLE;
+        $capabilityBits += Capabilities::CAPABILITY_PUBLIC;
+        $capabilityBits += Capabilities::CAPABILITY_WRITABLE;
+        $capabilityBits += Capabilities::CAPABILITY_HIERARCHICAL_IDENTIFIERS;
+        $this->capabilities = new Capabilities($capabilityBits);
     }
 
     /**
@@ -213,11 +217,11 @@ class AmazonS3Driver extends AbstractHierarchicalFilesystemDriver implements Str
      * and returns the result.
      *
      * @param int $capabilities
-     * @return int
+     * @return Capabilities
      */
-    public function mergeConfigurationCapabilities($capabilities): int
+    public function mergeConfigurationCapabilities(Capabilities $capabilities): Capabilities
     {
-        $this->capabilities &= $capabilities;
+        $this->capabilities->and($capabilities);
         return $this->capabilities;
     }
 
@@ -1395,7 +1399,7 @@ class AmazonS3Driver extends AbstractHierarchicalFilesystemDriver implements Str
      * @return string
      * @throws InvalidFileNameException
      */
-    public function sanitizeFileName($fileName, $charset = 'utf-8')
+    public function sanitizeFileName($fileName, $charset = 'utf-8'): string
     {
         if ($charset === 'utf-8') {
             $fileName = \Normalizer::normalize((string)$fileName) ?: $fileName;
