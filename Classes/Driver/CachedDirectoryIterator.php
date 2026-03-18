@@ -74,7 +74,7 @@ class CachedDirectoryIterator implements \RecursiveIterator, \SeekableIterator
         callable $normalizer,
         callable $filter
     ) {
-        $this->path = $path;
+        $this->path = rtrim($path,'/');
         $this->iteratorMode = $iteratorMode;
         $this->cache = $cache;
         $this->normalizer = $normalizer;

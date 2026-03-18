@@ -7,19 +7,32 @@
         <type>array</type>
         <el>
             <configurationKey>
-                <TCEforms>
-                    <label>Storage configuration</label>
-                    <config>
-                        <type>select</type>
-                        <renderType>selectSingle</renderType>
-                        <items type="array"></items>
-                        <itemsProcFunc>MaxServ\FalS3\Utility\FlexFormUtility->getStorageConfigurations</itemsProcFunc>
-                        <size>1</size>
-                        <minitems>1</minitems>
-                        <maxitems>1</maxitems>
-                    </config>
-                </TCEforms>
+                <label>Storage configuration</label>
+                <config>
+                    <type>select</type>
+                    <renderType>selectSingle</renderType>
+                    <items type="array"></items>
+                    <itemsProcFunc>MaxServ\FalS3\Utility\FlexFormUtility->getStorageConfigurations</itemsProcFunc>
+                    <size>1</size>
+                    <minitems>1</minitems>
+                    <maxitems>1</maxitems>
+                </config>
             </configurationKey>
+            <basePath>
+                <label>Base path</label>
+                <config>
+                    <type>input</type>
+                    <eval>required,trim</eval>
+                    <default>/</default>
+                </config>
+            </basePath>
+            <baseUri>
+                <label>Base URI</label>
+                <config>
+                    <type>input</type>
+                    <eval>required,trim</eval>
+                </config>
+            </baseUri>
         </el>
     </ROOT>
 </T3DataStructure>

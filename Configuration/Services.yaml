@@ -29,3 +29,10 @@ services:
         identifier: 'add-flush-s3-cache-action'
         method: 'addClearCacheActions'
         event: TYPO3\CMS\Backend\Backend\Event\ModifyClearCacheActionsEvent
+
+  MaxServ\FalS3\Resource\Event\FileProcessingEvent:
+    tags:
+      - name: event.listener
+        identifier: 'fals3-before-file-processing'
+        method: 'beforeFileProcessing'
+        event: TYPO3\CMS\Core\Resource\Event\BeforeFileProcessingEvent

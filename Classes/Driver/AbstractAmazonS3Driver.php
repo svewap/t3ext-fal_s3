@@ -307,7 +307,7 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
     }
 
     /**
-     * Checks if a file exists.
+     * Checks if a file or folder exists.
      *
      * @param string $fileIdentifier
      * @return bool
@@ -322,20 +322,7 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
             '/'
         );
 
-        /** @var \TYPO3\CMS\Core\Http\ServerRequest $request */
-        $request = $GLOBALS['TYPO3_REQUEST'] ?? null;
-        $modifyingRequestMethods = ['POST', 'PUT', 'DELETE', 'PATCH'];
-        // Prevent duplicate calls to redis (e.g. in the filelist, which calls fileExists _a lot_ for the same file)
-        // by caching the result in memory.
-        // However, in some request methods it can happen that a file doesn't exist at the beginning of the request,
-        // but is created during the request. Therefore, when the request method is one of the modifying ones (or there
-        // is no request, e.g. in CLI context) bypass the cache.
-        if (!array_key_exists($path, $this->fileExistsCache)
-            || $request === null
-            || in_array($request->getMethod(), $modifyingRequestMethods, true)
-        ) {
-            $this->fileExistsCache[$path] = is_file($path);
-        }
+        $this->fileExistsCache[$path] = $this->s3Client->doesObjectExist($this->configuration['bucket'], ltrim($this->getBasePath(),'/') . ($fileIdentifier !== '/' ? ltrim($fileIdentifier, '/'): $fileIdentifier));
 
         return $this->fileExistsCache[$path];
     }
@@ -578,27 +565,34 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
     public function hash($fileIdentifier, $hashAlgorithm): string
     {
         $fileIdentifier = $this->canonicalizeAndCheckFileIdentifier($fileIdentifier);
-        $path = $this->getStreamWrapperPath($fileIdentifier);
         if (!$this->fileExists($fileIdentifier)) {
             // The ResourceStorage catches an empty hash and handles
             return '';
         }
 
-        $hash = match ($hashAlgorithm) {
-            'sha1' => sha1_file($path),
-            'md5' => md5_file($path),
-            default => throw new \RuntimeException(
-                sprintf('Hash algorithm "%s" is not implemented.', $hashAlgorithm), 1329644451
-            ),
-        };
+        $hash = null;
+        $options = [
+            'Bucket' => $this->configuration['bucket'],
+            'Key' => ltrim($this->getBasePath(),'/') . ltrim($fileIdentifier, '/'),
+        ];
+        $result = $this->s3Client->headObject($options);
+        if (isset($result['ETag'])) {
+            $etag = trim($result['ETag'], '"');
 
-        if ($hash === false) {
+            $hash = match ($hashAlgorithm) {
+                'sha1' => sha1($etag),
+                'md5' => md5($etag),
+                default => throw new \RuntimeException(
+                    sprintf('Hash algorithm "%s" is not implemented.', $hashAlgorithm), 1329644451
+                ),
+            };
+        }
+        if ($hash === null) {
             throw new \RuntimeException(
-                sprintf('Could not hash file "%s" with hash algorithm "%s".', $fileIdentifier, $hashAlgorithm),
+                sprintf('Could not hash file "%s"', $fileIdentifier),
                 1685440788
             );
         }
-
         return $hash;
     }
 
@@ -950,8 +944,9 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
     protected function extractFileInformation(
         string $fileIdentifier,
         string $path,
-        array $propertiesToExtract = []
-    ): array {
+        array  $propertiesToExtract = []
+    ): array
+    {
         if (empty($propertiesToExtract)) {
             $propertiesToExtract = [
                 'size',
@@ -1060,7 +1055,8 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         array $filenameFilterCallbacks = [],
         $sort = '',
         $sortRev = false
-    ): array {
+    ): array
+    {
         if ($start === false && $numberOfItems === false) {
             return [];
         }
@@ -1123,7 +1119,8 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         array $folderNameFilterCallbacks = [],
         $sort = '',
         $sortRev = false
-    ): array {
+    ): array
+    {
         if ($start === false && $numberOfItems === false) {
             return [];
         }
@@ -1204,7 +1201,8 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         $folderIdentifier,
         $recursive = false,
         array $folderNameFilterCallbacks = []
-    ): int {
+    ): int
+    {
         $folderIdentifier = $this->canonicalizeAndCheckFolderIdentifier($folderIdentifier);
         $path = $this->getStreamWrapperPath($folderIdentifier);
 
@@ -1302,6 +1300,7 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         } else {
             throw new \RuntimeException(sprintf('Type "%s" is not supported.', gettype($file)), 1325191178);
         }
+        $identifier = ltrim($identifier, '/');
 
         return $basePath . $identifier;
     }
@@ -1337,11 +1336,12 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
      */
     protected function resolveFolderEntries(
         string $folderIdentifier,
-        bool $recursive = false,
-        bool $includeFiles = true,
-        bool $includeDirectories = true,
-        array $filterMethods = []
-    ): array {
+        bool   $recursive = false,
+        bool   $includeFiles = true,
+        bool   $includeDirectories = true,
+        array  $filterMethods = []
+    ): array
+    {
         $excludedFolders = $this->configuration['excludedFolders'] ?? [];
         if (in_array($folderIdentifier, $excludedFolders, true)) {
             return [];
@@ -1431,11 +1431,12 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
      * @throws \RuntimeException
      */
     protected function applyFilterMethodsToDirectoryItem(
-        array $filterMethods,
+        array  $filterMethods,
         string $itemName,
         string $itemIdentifier,
         string $parentIdentifier
-    ): bool {
+    ): bool
+    {
         foreach ($filterMethods as $filter) {
             if (
                 is_callable($filter) && $itemName !== '' && $itemIdentifier !== '' && $parentIdentifier !== ''
