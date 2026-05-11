@@ -83,6 +83,17 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
 
         ArrayUtility::mergeRecursiveWithOverrule($this->configuration, $storageConfiguration);
 
+        // Normalize basePath: a value consisting only of slashes (e.g. "/" from the storage
+        // FlexForm default) collapses to empty. Without this, getStreamWrapperPath() concatenates
+        // an extra "/" between bucket and identifier — the AWS StreamWrapper then sends
+        // Prefix="/" to ListObjects and only sees objects whose keys start with a slash,
+        // hiding the actual bucket contents.
+        if (is_string($this->configuration['basePath'] ?? null)
+            && trim($this->configuration['basePath'], '/') === ''
+        ) {
+            $this->configuration['basePath'] = '';
+        }
+
         $this->configuration['excludedFolders'] = $this->configuration['excludedFolders'] ?? [];
     }
 
