@@ -69,16 +69,31 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
 
         $storageConfiguration = $GLOBALS['TYPO3_CONF_VARS']['EXTCONF']['fal_s3']['storageConfigurations'][$this->configuration['configurationKey']] ?? [];
 
-        // Region may be an empty string for custom endpoints, so we do not want to check empty() on the region setting
-        if (!is_string($storageConfiguration['region'] ?? false)
-            || empty($storageConfiguration['key'] ?? '')
+        // Apply provider preset (endpoint, path-style, public URL template, region requirement).
+        // User-supplied values win — the preset only fills in blanks.
+        $provider = S3Provider::tryFromName($storageConfiguration['provider'] ?? null);
+        $presetDefaults = $provider->defaults();
+        $storageConfiguration = $this->applyProviderPreset($storageConfiguration, $presetDefaults);
+
+        // Without an explicit endpoint the SDK derives one from the region (AWS resolver),
+        // so the region becomes mandatory. With a custom endpoint any non-empty string is fine.
+        $regionRequired = empty($storageConfiguration['endpoint'] ?? '');
+
+        if (empty($storageConfiguration['key'] ?? '')
             || empty($storageConfiguration['secret'] ?? '')
+            || ($regionRequired && empty($storageConfiguration['region'] ?? ''))
         ) {
             // throw an InvalidConfigurationException to trigger the storage to mark itself as offline
             throw new InvalidConfigurationException(
                 sprintf('Missing configuration for "%s"', $this->configuration['configurationKey']),
                 1438785908
             );
+        }
+
+        // Drivers without a region (custom endpoints, MinIO) still need *something* to
+        // hand to the SDK — us-east-1 is the standard placeholder these providers accept.
+        if (!is_string($storageConfiguration['region'] ?? null) || $storageConfiguration['region'] === '') {
+            $storageConfiguration['region'] = 'us-east-1';
         }
 
         ArrayUtility::mergeRecursiveWithOverrule($this->configuration, $storageConfiguration);
@@ -95,6 +110,33 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         }
 
         $this->configuration['excludedFolders'] = $this->configuration['excludedFolders'] ?? [];
+        $this->configuration['provider'] = $provider->value;
+    }
+
+    /**
+     * Merge a provider preset into a storage configuration. Existing user values
+     * always win; the preset only fills in keys that are absent or empty.
+     *
+     * @param array $config user-supplied storage configuration
+     * @param array{endpoint: ?string, use_path_style: bool, public_url: ?string, region_required: bool} $preset
+     */
+    private function applyProviderPreset(array $config, array $preset): array
+    {
+        $region = (string)($config['region'] ?? '');
+
+        if (empty($config['endpoint'] ?? '') && $preset['endpoint'] !== null && $region !== '') {
+            $config['endpoint'] = S3Provider::expand($preset['endpoint'], ['region' => $region]);
+        }
+
+        if (!array_key_exists('use_path_style_endpoint', $config)) {
+            $config['use_path_style_endpoint'] = $preset['use_path_style'];
+        }
+
+        if (empty($config['publicUrlTemplate'] ?? '') && $preset['public_url'] !== null) {
+            $config['publicUrlTemplate'] = $preset['public_url'];
+        }
+
+        return $config;
     }
 
     /**
@@ -187,20 +229,49 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
             $identifier = '/' . trim($this->configuration['basePath'], '/') . $identifier;
         }
 
-        $publicUrl = '';
-
-        if (empty($this->configuration['publicBaseUrl'] ?? '') && empty($this->configuration['bucket'] ?? '')) {
-            return $publicUrl;
+        if (empty($this->configuration['publicBaseUrl'] ?? '')
+            && empty($this->configuration['publicUrlTemplate'] ?? '')
+            && empty($this->configuration['endpoint'] ?? '')
+            && empty($this->configuration['bucket'] ?? '')
+        ) {
+            return '';
         }
 
         $uriParts = GeneralUtility::trimExplode('/', $identifier, true);
         $uriParts = array_map('rawurlencode', $uriParts);
+        $key = implode('/', $uriParts);
 
+        // 1. Explicit publicBaseUrl (CDN, custom domain) wins.
         if (!empty($this->configuration['publicBaseUrl'] ?? '')) {
-            return rtrim($this->configuration['publicBaseUrl'], '/') . '/' . implode('/', $uriParts);
+            return rtrim($this->configuration['publicBaseUrl'], '/') . '/' . $key;
         }
 
-        return 'https://' . $this->configuration['bucket'] . '.s3.amazonaws.com/' . implode('/', $uriParts);
+        // 2. Provider preset published a URL template — expand it.
+        if (!empty($this->configuration['publicUrlTemplate'] ?? '')) {
+            return S3Provider::expand($this->configuration['publicUrlTemplate'], [
+                'region' => (string)($this->configuration['region'] ?? ''),
+                'bucket' => (string)($this->configuration['bucket'] ?? ''),
+                'key' => $key,
+            ]);
+        }
+
+        // 3. Custom endpoint — derive the URL from it (path-style respects use_path_style_endpoint).
+        if (!empty($this->configuration['endpoint'] ?? '')) {
+            $endpoint = rtrim($this->configuration['endpoint'], '/');
+            $bucket = (string)($this->configuration['bucket'] ?? '');
+            if (($this->configuration['use_path_style_endpoint'] ?? false) || $bucket === '') {
+                return $endpoint . ($bucket !== '' ? '/' . $bucket : '') . '/' . $key;
+            }
+            // Virtual-hosted style: prepend bucket as a sub-domain of the endpoint host.
+            $parts = parse_url($endpoint);
+            $scheme = $parts['scheme'] ?? 'https';
+            $host = $parts['host'] ?? '';
+            $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+            return $scheme . '://' . $bucket . '.' . $host . $port . '/' . $key;
+        }
+
+        // 4. Legacy AWS fallback for configurations that pre-date the provider key.
+        return 'https://' . $this->configuration['bucket'] . '.s3.amazonaws.com/' . $key;
     }
 
     /**
@@ -305,9 +376,18 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         $path = $this->getStreamWrapperPath($folderIdentifier);
 
         if ($deleteRecursively) {
+            // S3 has no native folder semantics — deleting the folder marker
+            // leaves child objects orphaned. Wipe files first, then sub-folders
+            // leaf-up, then fall through to delete this folder's own marker.
+            $filesInFolder = $this->resolveFolderEntries($folderIdentifier, true, true, false);
+            foreach ($filesInFolder as $file) {
+                $this->deleteFile($file);
+            }
             $foldersInFolder = $this->resolveFolderEntries($folderIdentifier, true, false, true);
-
-            array_map([$this, 'deleteFolder'], $foldersInFolder);
+            rsort($foldersInFolder);
+            foreach ($foldersInFolder as $subFolder) {
+                $this->deleteFolder($subFolder);
+            }
         }
 
         $this->flushCacheEntriesForFolder($folderIdentifier);
@@ -733,9 +813,12 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         /**
          * Make sure the target folder exists before trying to copy folders.
          * The TYPO3 ResourceDriver will throw an exception when copying files in the filelist or at processing images.
+         *
+         * Pass $recursive=true so createFolder() sanitises path segments individually
+         * instead of collapsing every slash into an underscore via sanitizeFileName().
          */
         if (!$this->folderExists($targetFolderIdentifier)) {
-            $this->createFolder($targetFolderIdentifier);
+            $this->createFolder($targetFolderIdentifier, '', true);
         }
 
         foreach ($sourceDirectoryContents as $sourceEntry) {
@@ -768,6 +851,8 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
         }
 
         $this->flushCacheEntriesForFolder(dirname($targetFolderIdentifier));
+        // Drop the negative folderExistsCache entry written by the pre-copy guard above.
+        unset($this->folderExistsCache[rtrim($this->getStreamWrapperPath($targetFolderIdentifier), '/')]);
 
         return true;
     }
@@ -800,12 +885,17 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
     public function setFileContents($fileIdentifier, $contents): int
     {
         $fileIdentifier = $this->canonicalizeAndCheckFileIdentifier($fileIdentifier);
+        $path = $this->getStreamWrapperPath($fileIdentifier);
 
-        $file = file_put_contents($this->getStreamWrapperPath($fileIdentifier), $contents);
+        $file = file_put_contents($path, $contents);
 
         if ($file === false) {
             throw new \RuntimeException(sprintf('File "%s" was not created', $fileIdentifier));
         }
+
+        // Invalidate caches so subsequent listFiles / countFiles / fileExists see the new object.
+        $this->flushCacheEntriesForFolder(dirname($fileIdentifier));
+        unset($this->fileExistsCache[rtrim($path, '/')]);
 
         return $file;
     }
@@ -1544,7 +1634,15 @@ abstract class AbstractAmazonS3Driver extends AbstractHierarchicalFilesystemDriv
      */
     protected function getProcessingFolder(): string
     {
-        return $this->getStorage()->getProcessingFolder()->getName();
+        // Driver may be instantiated without an attached storage (tests, CLI tooling).
+        // findByUid() in v14 type-checks $uid as int, so a null storageUid throws.
+        if (!$this->storageUid) {
+            return '_processed_';
+        }
+        $storage = $this->getStorage();
+        return $storage instanceof ResourceStorage
+            ? $storage->getProcessingFolder()->getName()
+            : '_processed_';
     }
 
     /**

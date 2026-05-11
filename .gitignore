@@ -74,9 +74,16 @@
 !/Tests/Unit
 !/Tests/Unit/Driver
 !/Tests/Unit/Driver/*.php
+!/Tests/Functional
+!/Tests/Functional/Driver
+!/Tests/Functional/Driver/*.php
+!/Tests/.env.dist
 
 # Build
 !/.travis.yml
+!/Build/phpunit
+!/Build/phpunit/*.xml
+!/Build/phpunit/*.php
 
 # DDEV Setup
 !/.ddev

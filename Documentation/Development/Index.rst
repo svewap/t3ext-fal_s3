@@ -54,3 +54,41 @@ These additional commands can be used to be able to view the files in the backen
     ddev mc anonymous set download minio/typo3-13
 
 After creating the buckets, you can configure them in the backend (see :ref:`administration`).
+
+
+Running the test suite
+======================
+
+The extension ships with unit tests and functional tests. The functional
+tests round-trip against a real S3-compatible endpoint — the MinIO
+container that ``ddev start`` already brings up.
+
+One-time setup
+--------------
+
+.. code-block:: bash
+
+    ddev start
+    ddev mc mb minio/fal-s3-test
+    ddev composer install
+    cp Tests/.env.dist Tests/.env
+
+The shipped ``Tests/.env.dist`` is pre-filled for the bundled MinIO
+container (endpoint ``http://minio:10101``, credentials ``ddevminio``).
+``Tests/.env`` is gitignored.
+
+Running tests
+-------------
+
+.. code-block:: bash
+
+    # Unit tests — fast, no S3 needed
+    ddev exec .Build/bin/phpunit -c Build/phpunit/UnitTests.xml
+
+    # Functional tests — hit the MinIO container; skip automatically when
+    # FAL_S3_TEST_* env vars are absent.
+    ddev exec .Build/bin/phpunit -c Build/phpunit/FunctionalTests.xml
+
+The functional bootstrap loads ``Tests/.env`` via ``symfony/dotenv``. In
+CI the file is simply absent, so every functional test self-skips and
+the suite stays green without secrets.

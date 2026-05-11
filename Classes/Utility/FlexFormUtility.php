@@ -16,7 +16,10 @@ class FlexFormUtility
             if (empty($storageConfiguration['title'] ?? '')) {
                 continue;
             }
-            $parameters['items'][] = [$storageConfiguration['title'], $configurationKey];
+            $parameters['items'][] = [
+                'label' => $storageConfiguration['title'],
+                'value' => $configurationKey,
+            ];
         }
     }
 }
